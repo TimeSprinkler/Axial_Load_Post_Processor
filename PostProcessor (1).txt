@@ -1,0 +1,493 @@
+import openpyxl
+import csv
+import sys
+import os
+from openpyxl.chart import (
+    ScatterChart,
+    Reference,
+    Series,
+)
+from openpyxl.styles import NamedStyle, Alignment, Font
+
+# The data needs to be in the format of Time, Angle, Torque, Load Cell 1, Load Cell 2
+
+mNewWorkbookName = "TS Summary Sheet.xlsx"
+mWorkSheetNames = ["Summary Sheet", "Torque vs Clamp Load1", "Torque vs Clamp Load2", "Graph1",
+                  "Graph2", "AngleGraph1", "AngleGraph2", "TAGraph1", "TAGraph2"]
+mPathname = os.path.dirname(sys.argv[0])
+mFirstRowLocation = 3
+mIsCellTwoHere = False  # Change this to false if you only have 1 load cell
+mClampLoadValuesTargeted = [8]
+mTorqueValuesTargeted = []
+mAnglesFromPLTargeted = [45] # angles after the preloaded torque is applied
+mPreTorque = 10 # This is the value you change when you when a different preloaded torque in Nm.  10 is Default
+
+# Finds all the files in the current directory.
+# Files must be moved to the location where this script is, run script, then moved back
+def FindAllDataFiles():
+
+    tempList = []
+    for file in os.listdir(mPathname):
+        if file.endswith(".csv"):
+            tempList.append(file)
+
+    return tempList
+
+
+def CreateNewWorkBook(name):
+    tempWorkbook = openpyxl.Workbook()
+    tempWorkbook.save(name)
+    return tempWorkbook
+
+
+def CreateDataWorksheets(workbook):
+    for string in mWorkSheetNames:
+        workbook.create_sheet(string)
+
+
+# accepts an Angle and returns the cell reference of that angle
+def FindNextInstanceOfAngle(cellReference, angleData):
+    while True:
+        currentMinAngle = 10
+        if cellReference >= len(angleData):
+            # print("Reference too big, exiting " + str(cellReference) + ": " + str(len(angleData)))
+            return cellReference - 1
+
+        if 0 < float(angleData[cellReference]) < currentMinAngle:
+            return cellReference
+        cellReference += 1
+
+
+# accepts a Torque and returns the cell reference of that Torque
+def FindNextInstanceOfTorque(cellReference, torqueData):
+    while True:
+        torqueLimit = 35
+        if cellReference >= len(torqueData):
+            return cellReference - 1
+        if torqueLimit <= float(torqueData[cellReference]):
+            return cellReference
+        cellReference += 1
+
+
+def CreateOneDataSet(cellReference, torqueData, angleData):
+
+    dataSetStart = cellReference
+    dataSetEnd = len(torqueData) - 1
+
+    # find first instance of angle > 0
+    cellReference = FindNextInstanceOfAngle(cellReference, angleData)
+    if cellReference+1 >= len(angleData) and not mIsCellTwoHere:
+            cellReference = 0;
+    dataSetStart = cellReference
+
+    # find next instance of Torque above 35
+    cellReference = FindNextInstanceOfTorque(cellReference, torqueData)
+
+    # find next instance of angle < 0, 1 before that
+    cellReference = FindNextInstanceOfAngle(cellReference, angleData)
+    if mIsCellTwoHere:
+        dataSetEnd = cellReference
+
+    return dataSetStart, dataSetEnd
+
+
+def CreateDataSets(torqueList, angleList, loadCellList, loadCelltwoList):
+    torqueData = torqueList
+    angleData = angleList
+    loadCellOneData = loadCellList
+    loadCellTwoData = loadCelltwoList
+
+    cellReference = 0
+    dataStartEnd = CreateOneDataSet(cellReference, torqueData, angleData)
+
+
+    from AxialLoadDataSet import AxialLoadDataSet
+    dataSetPump = AxialLoadDataSet(torqueData[dataStartEnd[0]:dataStartEnd[1]],
+                                   angleData[dataStartEnd[0]:dataStartEnd[1]],
+                                   loadCellOneData[dataStartEnd[0]:dataStartEnd[1]],
+                                   loadCellTwoData[dataStartEnd[0]:dataStartEnd[1]], mPreTorque)
+
+    # dont reset counter, but repeat steps
+    cellReference = dataStartEnd[1]
+    if mIsCellTwoHere:
+        dataStartEnd = CreateOneDataSet(cellReference, torqueData, angleData)
+
+    print("dataStart", dataStartEnd[0], "dataEnd", dataStartEnd[1])
+    dataSetRail = AxialLoadDataSet(torqueData[dataStartEnd[0]:dataStartEnd[1]],
+                                   angleData[dataStartEnd[0]:dataStartEnd[1]],
+                                   loadCellOneData[dataStartEnd[0]:dataStartEnd[1]],
+                                   loadCellTwoData[dataStartEnd[0]:dataStartEnd[1]], mPreTorque)
+
+    return dataSetPump, dataSetRail
+
+
+def printOneColumn(dataList, column):
+    irows = 1
+    while irows <= len(dataList):
+        answerWorkbook.active.cell(row=irows, column=column).value = float(dataList[irows - 1])
+
+        irows += 1
+
+
+def printDataSet(dataSet, jcolumns):
+
+    printOneColumn(dataSet.torqueData, jcolumns)
+    jcolumns += 1
+
+    printOneColumn(dataSet.angleData, jcolumns)
+    jcolumns += 1
+
+    printOneColumn(dataSet.loadCellOneData, jcolumns)
+    jcolumns += 1
+
+    printOneColumn(dataSet.loadCellTwoData, jcolumns)
+
+
+def CreateSummarySheetStyle(workbook):
+    style = NamedStyle("Title")
+    style.font = Font(bold=True)
+    style.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True, shrink_to_fit=False)
+
+    workbook.add_named_style(style)
+
+# the formatting here is the decided styling from the first time I made this summary sheet
+def CreateSummarySheetFormatting(workbook):
+
+    CreateSummarySheetStyle(workbook)
+    ws = workbook.active
+
+    # merging things
+    ws.merge_cells('A1:A2')
+    ws.merge_cells('B1:B2')
+    ws.merge_cells('C1:C2')
+    ws['A1'].value = "Sample"
+    ws['A1'].style = 'Title'
+    ws['B1'].value = "Side"
+    ws['B1'].style = 'Title'
+
+    c1 = ws['C1']
+    c1.value = "Starting Side"
+    c1.style = 'Title'
+
+    i = 4
+    j = 0
+    while len(mClampLoadValuesTargeted) > j:
+        ws.cell(row=1, column=i).value = "At " + str(mClampLoadValuesTargeted[j]) + " kN"
+        ws.cell(row=1, column=i).style = 'Title'
+        ws.cell(row=2, column=i).value = "Torque (Nm)"
+        ws.cell(row=2, column=i).style = 'Title'
+        j += 1
+        i += 1
+
+    j = 0
+    while len(mTorqueValuesTargeted) > j:
+        ws.cell(row=1, column=i).value = "At " + str(mTorqueValuesTargeted[j]) + " Nm Torque"
+        ws.cell(row=1, column=i).style = 'Title'
+        ws.merge_cells(start_row=1, start_column=i, end_row=1, end_column=i + 3)
+
+        ws.cell(row=2, column=i).value = "Clamp Load (kN)"
+        ws.cell(row=2, column=i).style = 'Title'
+
+        ws.cell(row=2, column=i + 1).value = "Angle"
+        ws.cell(row=2, column=i + 1).style = 'Title'
+
+        ws.cell(row=2, column=i + 2).value = "Angle from " + str(mPreTorque)
+        ws.cell(row=2, column=i + 2).style = 'Title'
+
+        ws.cell(row=2, column=i + 3).value = "Angle at " + str(mPreTorque)
+        ws.cell(row=2, column=i + 3).style = 'Title'
+        j += 1
+        i += 4
+
+    j = 0
+    while len(mAnglesFromPLTargeted) > j:
+        ws.cell(row=1, column=i).value = "At Angle " + str(mAnglesFromPLTargeted[j])
+        ws.cell(row=1, column=i).style = 'Title'
+        ws.merge_cells(start_row=1, start_column=i, end_row=1, end_column=i + 1)
+
+        ws.cell(row=2, column=i).value = "Torque"
+        ws.cell(row=2, column=i).style = 'Title'
+
+        ws.cell(row=2, column=i + 1).value = "Clamp Load (kN)"
+        ws.cell(row=2, column=i + 1).style = 'Title'
+
+        j += 1
+        i += 2
+
+    # TODO Fix Column Widths
+
+
+def WriteOneSummaryLine(dataSet, num, worksheet):
+    rowToWriteTo = num + mFirstRowLocation
+
+    worksheet.cell(row=rowToWriteTo, column=1).value = dataSet.name
+    worksheet.cell(row=rowToWriteTo, column=2).value = dataSet.side
+    worksheet.cell(row=rowToWriteTo, column=3).value = dataSet.startingSide
+
+    i = 4
+    j = 0
+    while len(mClampLoadValuesTargeted) > j:
+        worksheet.cell(row=rowToWriteTo, column=i).value = dataSet.GetTorqueAtClampLoad(mClampLoadValuesTargeted[j])
+        j += 1
+        i += 1
+
+    j = 0
+    while len(mTorqueValuesTargeted) > j:
+        valuesStorage = dataSet.GetValuesAtXTorque(mTorqueValuesTargeted[j])
+        worksheet.cell(row=rowToWriteTo, column=i).value = valuesStorage[1]
+        worksheet.cell(row=rowToWriteTo, column=i+1).value = valuesStorage[0]
+        worksheet.cell(row=rowToWriteTo, column=i+2).value = valuesStorage[0] - valuesStorage[2]
+        worksheet.cell(row=rowToWriteTo, column=i+3).value = valuesStorage[2]
+        j += 1
+        i += 4
+
+    j = 0
+    while len(mAnglesFromPLTargeted) > j:
+        valuesStorage = dataSet.GetTorqueAtAngleFrom10T(mAnglesFromPLTargeted[j])
+        worksheet.cell(row=rowToWriteTo, column=i).value = valuesStorage[0]  # Torque
+        worksheet.cell(row=rowToWriteTo, column=i+1).value = valuesStorage[1]  # ClampLoad
+        j += 1
+        i += 2
+
+    #Here is where clamp backoff will be tracked and made
+
+
+def CreateSummaryWorksheet(tempAnswerWorkbook, oneDSs, twoDSs):
+    tempAnswerWorkbook.active = tempAnswerWorkbook[mWorkSheetNames[0]]
+    CreateSummarySheetFormatting(tempAnswerWorkbook)
+
+    rowNum = 0
+    DSNum = 0
+    while DSNum < len(oneDSs):
+        if rowNum % 2 != 0 or not mIsCellTwoHere:
+            WriteOneSummaryLine(oneDSs[DSNum], rowNum, tempAnswerWorkbook.active)
+
+            if not mIsCellTwoHere:
+                DSNum += 1
+
+        else:
+            if mIsCellTwoHere:
+                WriteOneSummaryLine(twoDSs[DSNum], rowNum, tempAnswerWorkbook.active)
+                DSNum += 1
+
+        rowNum += 1
+
+
+def CreateGraphSheets(tempAnswerWorkbook, oneSets, twoSets):
+    ws = tempAnswerWorkbook[mWorkSheetNames[3]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[1]
+    chart.x_axis.title = "Clamp Load (kN)"
+    chart.y_axis.title = "Torque (N)"
+
+    xvalues = []
+    yvalues = []
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col= columnStart + 1,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col=columnStart + 3,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+    ws = tempAnswerWorkbook[mWorkSheetNames[4]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[2]
+    chart.x_axis.title = "Torque (N)"
+    chart.y_axis.title = "Clamp Load (kN)"
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 1,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 4,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+def CreateAngleGraphSheets(tempAnswerWorkbook, oneSets, twoSets):
+    ws = tempAnswerWorkbook[mWorkSheetNames[5]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[1]
+    chart.x_axis.title = "Clamp Load (kN)"
+    chart.y_axis.title = "Angle (degrees)"
+
+    xvalues = []
+    yvalues = []
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col= columnStart + 2,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col=columnStart + 3,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+    ws = tempAnswerWorkbook[mWorkSheetNames[6]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[2]
+    chart.x_axis.title = "Clamp Load (kN)"
+    chart.y_axis.title = "Angle (degrees)"
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 2,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 4,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+def CreateTorqueAngleGraphSheets(tempAnswerWorkbook, oneSets, twoSets):
+    ws = tempAnswerWorkbook[mWorkSheetNames[7]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[1]
+    chart.x_axis.title = "Torque (N)"
+    chart.y_axis.title = "Angle (degrees)"
+
+    xvalues = []
+    yvalues = []
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col= columnStart + 2,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[1]],
+                            min_col=columnStart + 1,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+    ws = tempAnswerWorkbook[mWorkSheetNames[8]]
+    chart = ScatterChart()
+    chart.title = mWorkSheetNames[2]
+    chart.x_axis.title = "Torque (N)"
+    chart.y_axis.title = "Angle (degrees)"
+
+    i = 0
+    while i < len(oneSets):
+        columnStart = i * 5
+        yvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 2,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        xvalues = Reference(tempAnswerWorkbook[mWorkSheetNames[2]],
+                            min_col=columnStart + 1,
+                            min_row=1,
+                            max_row=len(oneSets[i].torqueData))
+        series = Series(yvalues, xvalues, title_from_data=False)
+        chart.series.append(series)
+        i += 1
+
+    ws.add_chart(chart, "A1")
+
+# converting everything into their dataSet classes starts here.
+workbookList = FindAllDataFiles()
+
+oneDataSets = []
+twoDataSets = []
+
+for string in workbookList:
+
+    tempTorqueList = []
+    tempAngleList = []
+    tempLoadCellOneList = []
+    tempLoadCellTwoList = []
+
+    with open(string) as fin:
+        reader = csv.reader(fin)
+
+        for row in reader:
+            tempTorqueList.append(row[1])
+            tempAngleList.append(row[2])
+            tempLoadCellOneList.append(row[3])
+            if mIsCellTwoHere:
+                tempLoadCellTwoList.append(row[4])
+            else:
+                tempLoadCellTwoList.append(row[3])
+
+    print("Load cell 2 List Length", len(tempLoadCellTwoList))
+    tempDataSets = CreateDataSets(tempTorqueList, tempAngleList, tempLoadCellOneList, tempLoadCellTwoList)
+
+    tempDataSets[0].SetName(string)
+    tempDataSets[1].SetName(string)
+
+    oneDataSets.append(tempDataSets[0])
+    twoDataSets.append(tempDataSets[1])
+
+answerWorkbook = CreateNewWorkBook(mNewWorkbookName)
+CreateDataWorksheets(answerWorkbook)
+
+answerWorkbook.active = answerWorkbook[mWorkSheetNames[1]]
+
+# printing
+jcolumns = 1
+dataIndex = 0
+
+while dataIndex < len(oneDataSets):
+    # change the active sheet before printing each sheet
+    answerWorkbook.active = answerWorkbook[mWorkSheetNames[1]]
+    printDataSet(oneDataSets[dataIndex], jcolumns)
+    answerWorkbook.active = answerWorkbook[mWorkSheetNames[2]]
+    printDataSet(twoDataSets[dataIndex], jcolumns)
+    # Jump 4 data columns and make one Blank column
+    dataIndex += 1
+    jcolumns += 5
+
+answerWorkbook.save(mNewWorkbookName)
+# printing End
+
+# Create Headers for Summary Sheet
+CreateSummaryWorksheet(answerWorkbook, oneDataSets, twoDataSets)
+answerWorkbook.save(mNewWorkbookName)
+
+CreateGraphSheets(answerWorkbook, oneDataSets, twoDataSets)
+answerWorkbook.save(mNewWorkbookName)
+
+CreateAngleGraphSheets(answerWorkbook, oneDataSets, twoDataSets)
+answerWorkbook.save(mNewWorkbookName)
+
+CreateTorqueAngleGraphSheets(answerWorkbook, oneDataSets, twoDataSets)
+answerWorkbook.save(mNewWorkbookName)

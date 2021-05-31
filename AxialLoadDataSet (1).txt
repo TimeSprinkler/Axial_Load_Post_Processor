@@ -1,0 +1,182 @@
+class AxialLoadDataSet:
+    name = ""
+    side = "One"
+    startingSide = "One"
+    torqueData = []
+    angleData = []
+    loadCellOneData = []
+    loadCellTwoData = []
+    maxTorque = 0
+    maxClampLoadOne = 0
+    maxClampLoadTwo = 0
+    preTorque = 10
+    angleAtPreTorque = 0
+
+    def __init__(self, torque, angle, cellOne, cellTwo, preTorque):
+        self.torqueData = torque
+        self.angleData = angle
+        self.preTorque = preTorque
+        self.determineSideCount = 0
+        self.loadCellOneData = cellOne
+        self.loadCellTwoData = cellTwo
+        self.side = self.DetermineSide()
+        self.startingSide = self.DetermineStartingSide()
+
+    def DetermineStartingSide(self):
+        if self.side == "Two":
+            if 6 < float(self.loadCellOneData[0]):
+                return "One"
+            else:
+                return "Two"
+        else:
+            if 6 < float(self.loadCellTwoData[0]):
+                return "Two"
+            else:
+                return "One"
+
+    def SetName(self, name):
+        self.name = name
+
+    def DetermineSide(self):
+        self.determineSideCount += 1
+        print(self.determineSideCount, len(self.loadCellOneData), "<- One  Two -> ", len(self.loadCellTwoData))
+
+        differenceCellTwo = abs(
+            float(self.loadCellTwoData[0]) - float(self.loadCellTwoData[len(self.loadCellOneData) - 1]))
+        differenceCellOne = abs(
+            float(self.loadCellOneData[0]) - float(self.loadCellOneData[len(self.loadCellOneData) - 1]))
+
+        if differenceCellOne >= differenceCellTwo:
+            return "One"
+        else:
+            return "Two"
+
+    def LinearInterpolate (self, target, lowerTarget, higherTarget, lowerRef, higherRef):
+        return float(lowerRef) + ((float(higherRef)-float(lowerRef)) *
+                                  (float(target) - float(lowerTarget))/(float(higherTarget) - float(lowerTarget)))
+
+    def GetTorqueAtClampLoad(self, clampLoad):
+        lowerLoadValue = 0
+        upperLoadValue = 0
+        cellReference = 0
+
+        if self.side == "One":
+            while cellReference < len(self.loadCellOneData):
+                if float(clampLoad) > float(self.loadCellOneData[cellReference]):
+                    lowerLoadValue = self.loadCellOneData[cellReference]
+                    cellReference += 1
+                elif float(self.loadCellOneData[cellReference]) >= clampLoad:
+                    upperLoadValue = self.loadCellOneData[cellReference]
+                    break
+                else:
+                    break
+        elif self.side == "Two":
+            while cellReference < len(self.loadCellTwoData):
+                if float(clampLoad) > float(self.loadCellTwoData[cellReference]):
+                    lowerLoadValue = self.loadCellTwoData[cellReference]
+                    cellReference += 1
+                elif float(self.loadCellTwoData[cellReference]) >= clampLoad:
+                    upperLoadValue = self.loadCellTwoData[cellReference]
+                    break
+                else:
+                    print("Error in Get Clamp Load Value")
+                    break
+
+        # linearly interpolate
+        if cellReference >= len(self.loadCellTwoData):
+            cellReference = len(self.loadCellTwoData) - 1
+
+        torque = self.LinearInterpolate(target=float(clampLoad),
+                                        lowerTarget=float(lowerLoadValue),
+                                        higherTarget=float(upperLoadValue),
+                                        lowerRef=float(self.torqueData[cellReference-1]),
+                                        higherRef=float(self.torqueData[cellReference]))
+
+        return torque
+
+    def GetValuesAtXTorque(self, targetTorque):
+        clampLoadX = 0
+        cellReference = 0
+        lowerCellRefPreTorque = 0
+        lowerTorqueLimit = 0
+        locklowerCell = False
+
+        while cellReference < len(self.torqueData):
+            if targetTorque > float(self.torqueData[cellReference]):
+                if self.preTorque > float(self.torqueData[cellReference]) and not locklowerCell:
+                    lowerCellRefPreTorque = cellReference + 1
+                else:
+                    locklowerCell = True
+
+                lowerTorqueLimit = self.torqueData[cellReference]
+                cellReference += 1
+
+            elif float(self.torqueData[cellReference]) >= targetTorque:
+                break
+            else:
+                print("Error in Get Clamp Load Value")
+                break
+
+        #  Error Handling for side side tests
+        if cellReference >= len(self.torqueData):
+            cellReference = len(self.torqueData)-1
+
+        # print(cellReference)
+        angleAtX = self.LinearInterpolate(targetTorque, self.torqueData[cellReference - 1],
+                                          self.torqueData[cellReference],
+                                          self.angleData[cellReference-1],
+                                          self.angleData[cellReference])
+        if self.side == "One":
+            clampLoadX = self.LinearInterpolate(targetTorque, self.torqueData[cellReference - 1],
+                                                self.torqueData[cellReference],
+                                                self.loadCellOneData[cellReference-1],
+                                                self.loadCellOneData[cellReference])
+        elif self.side == "Two":
+            clampLoadX = self.LinearInterpolate(targetTorque, self.torqueData[cellReference - 1],
+                                                self.torqueData[cellReference],
+                                                self.loadCellTwoData[cellReference - 1],
+                                                self.loadCellTwoData[cellReference])
+        # Error prevention if the system only has 1 load cell
+        if lowerCellRefPreTorque >= len(self.torqueData):
+            lowerCellRefPreTorque = len(self.torqueData) - 1
+
+
+        angleAtPreTorque = self.LinearInterpolate(self.preTorque, self.torqueData[lowerCellRefPreTorque - 1],
+                                                 self.torqueData[lowerCellRefPreTorque],
+                                                 self.angleData[lowerCellRefPreTorque - 1],
+                                                 self.angleData[lowerCellRefPreTorque])
+        self.angleAtPreTorque = angleAtPreTorque
+
+        return angleAtX, clampLoadX, angleAtPreTorque
+
+    def GetTorqueAtAngleFrom10T(self, angle):
+        clampLoadX = 0
+        targetAngle = self.angleAtPreTorque + angle
+        cellReference = 0
+
+        while cellReference < len(self.angleData):
+            if targetAngle > float(self.angleData[cellReference]):
+                cellReference += 1
+            elif float(self.angleData[cellReference]) >= targetAngle:
+                break
+            else:
+                print("Error in Get Angle Value")
+                break
+
+        torque = self.LinearInterpolate(targetAngle, self.angleData[cellReference - 1],
+                                          self.angleData[cellReference],
+                                          self.torqueData[cellReference - 1],
+                                          self.torqueData[cellReference])
+
+        if self.side == "One":
+            clampLoadX = self.LinearInterpolate(targetAngle, self.angleData[cellReference - 1],
+                                                self.angleData[cellReference],
+                                                self.loadCellOneData[cellReference-1],
+                                                self.loadCellOneData[cellReference])
+        elif self.side == "Two":
+            clampLoadX = self.LinearInterpolate(targetAngle, self.angleData[cellReference - 1],
+                                                self.angleData[cellReference],
+                                                self.loadCellTwoData[cellReference - 1],
+                                                self.loadCellTwoData[cellReference])
+
+        return torque, clampLoadX
